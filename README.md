@@ -56,15 +56,7 @@ Optional Peering Variables:
 This example uses the sample config file in this repository and though the ASNs and company names are fake, it shows how the logic of the script works.
 
 ```
-myhost:peerpal Steve$ python3 ./peerpal.py 5678
-Starting peerpal
-Attempting to read config file.
-Reading defaults from config.
-Config file successful read.
-Using local ASN 5678 from config file
-Using peer ASN 1234
-Finding peering information. Standby...
-Determining common exchange points.
+myhost:peerpal Steve$ python3 ./peerpal.py -p 5678
 
 The following are the locations where Netquirks and ACME have common IPv4 presence:
 (IPs for ACME are displayed)
