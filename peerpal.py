@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import base64
 import json
 import urllib.request
 import configparser
@@ -21,7 +22,7 @@ def main():
         # Optional Variables
         your_asn = None
         peer_asn = None
-        password = None
+        bgp_password = None
         ttl_sec = False
 
         config = None
@@ -73,6 +74,8 @@ def main():
 
             # Check obligatory fields
             debug('Reading defaults from config.')
+            user = config['DEFAULT']['peering_db_username']
+            passwd = config['DEFAULT']['peering_db_password']
             op_sys = config['DEFAULT']['op_sys']
             ios_neigh_grp_v4 = config['DEFAULT']['ios_neigh_grp_v4'].split(',')
             ios_neigh_grp_v6 = config['DEFAULT']['ios_neigh_grp_v6'].split(',')
@@ -86,9 +89,9 @@ def main():
                 if(config['DEFAULT']['ttl_sec'].lower() == 'true'):
                     ttl_sec = True
                     debug('ttl-sec being used as a default')
-            if('password' in config['DEFAULT']):
-                password = config['DEFAULT']['password']
-                debug('Default password found')
+            if('bgp_password' in config['DEFAULT']):
+                bgp_password = config['DEFAULT']['bgp_password']
+                debug('Default BGP password found')
 
             # Log the results
             debug('Following defaults detected:')
@@ -113,8 +116,8 @@ def main():
         if(not peer_asn):
             peer_asn = ask_for_asn('What is your potential peers ASN? ')
 
-        your_basic_json = get_basic_isp_details(your_asn)
-        peer_basic_json = get_basic_isp_details(peer_asn)
+        your_basic_json = get_basic_isp_details(your_asn, user, passwd)
+        peer_basic_json = get_basic_isp_details(peer_asn, user, passwd)
 
         debug('Finding peering information. Standby...')
         debug('Getting Net IDs...')
@@ -122,8 +125,8 @@ def main():
         peer_net_id = str(peer_basic_json['data'][0]['id'])
 
         debug('Getting full ISP details')
-        your_data = get_full_isp_details(your_net_id)['data'][0]
-        peer_data = get_full_isp_details(peer_net_id)['data'][0]
+        your_data = get_full_isp_details(your_net_id, user, passwd)['data'][0]
+        peer_data = get_full_isp_details(peer_net_id, user, passwd)['data'][0]
 
         debug('Getting your Companys details.')
         your_name = your_data['name']
@@ -166,11 +169,13 @@ def main():
 
         new_peers_v4 = ask_which_peerings(common_ix_v4, '4', your_name,
                                           peer_name, your_ix_v4,
-                                          peer_ix_v4, config, debugging)
+                                          peer_ix_v4, config,
+                                          user, passwd, debugging)
 
         new_peers_v6 = ask_which_peerings(common_ix_v6, '6', your_name,
                                           peer_name, your_ix_v6,
-                                          peer_ix_v6, config, debugging)
+                                          peer_ix_v6, config, 
+                                          user, passwd, debugging)
 
         if(not len(common_ix_v4) == 0):
             print('\nIPv4 Peerings:\n****************')
@@ -178,7 +183,8 @@ def main():
                     new_peers_v4, common_ix_v4, '4', your_name,
                     peer_name, your_asn, peer_asn, peer_ix_v4, peer_irr,
                     peer_prfx_cnt_v4, op_sys, ios_neigh_grp_v4,
-                    xr_neigh_grp_v4, password, config, ttl_sec, debugging
+                    xr_neigh_grp_v4, bgp_password, config, ttl_sec, user,
+                    passwd, debugging
                             )
 
         if(not len(common_ix_v6) == 0):
@@ -187,7 +193,8 @@ def main():
                     new_peers_v6, common_ix_v6, '6', your_name,
                     peer_name, your_asn, peer_asn, peer_ix_v6, peer_irr,
                     peer_prfx_cnt_v6, op_sys, ios_neigh_grp_v6,
-                    xr_neigh_grp_v6, password, config, ttl_sec, debugging
+                    xr_neigh_grp_v6, bgp_password, config, ttl_sec, user, 
+                    passwd, debugging
                             )
 
     except ValueError as e:
@@ -197,16 +204,38 @@ def main():
         sys.exit('\nScript stopped by user.')
 
 
-def get_basic_isp_details(asn):
+def pdb_api_call(end_point, user, passwd):
+    '''
+    This function makes an PDB API call using the supplied username 
+    and password, to the base URL with the specified end point.
+    Multiple functions call this method to get this API data.
+    '''
+    try:
+        base64string = base64.b64encode(
+                bytes('{0:s}:{1:s}'.format(user, passwd), 'ascii')
+                                       )
+        url = 'https://www.peeringdb.com/api{0:s}'.format(end_point)
+        request = urllib.request.Request(url)
+        request.add_header(
+                "Authorization", 
+                "Basic {0:s}".format(base64string.decode('utf-8'))
+                          )
+        json_obj = urllib.request.urlopen(request)
+        str_json_obj = json_obj.read().decode('utf-8')
+        output = json.loads(str_json_obj)
+    except Exception as e:
+        raise e
+    return output
+
+
+def get_basic_isp_details(asn, user, passwd):
     '''
     This function returns a json object from the peering DB based on the
     provided autonomous system number
     '''
     try:
-        url = 'https://www.peeringdb.com/api/net?asn={0:s}'.format(asn)
-        json_obj = urllib.request.urlopen(url)
-        str_json_obj = json_obj.read().decode('utf-8')
-        output = json.loads(str_json_obj)
+        end_point = '/net?asn={0:s}'.format(asn)
+        output = pdb_api_call(end_point, user, passwd)
     except urllib.error.HTTPError as e:
         if('404' in str(e)):
             sys.exit('Cannot find ASN number {0:s} on peering DB. '
@@ -217,36 +246,17 @@ def get_basic_isp_details(asn):
     return output
 
 
-def get_full_isp_details(net_id):
+def get_full_isp_details(net_id, user, passwd):
     '''
     This function returns a json object from the peering DB based on the
     provided Net ID
     '''
     try:
-        url = 'https://www.peeringdb.com/api/net/{0:s}'.format(net_id)
-        json_obj = urllib.request.urlopen(url)
-        str_json_obj = json_obj.read().decode('utf-8')
-        output = json.loads(str_json_obj)
+        end_point = '/net/{0:s}'.format(net_id)
+        output = pdb_api_call(end_point, user, passwd)
     except urllib.error.HTTPError as e:
         sys.exit('Cannot access \'{0:s}\'. Check network '
                  'connection. Detail: {1:s}'.format(url, str(e)))
-    return output
-
-
-def get_ix_details(net_id):
-    '''
-    This function returns a json object from the peering DB, detailing the ix
-    points, based on the provided net id (which will correspond to an
-    organisation)
-    '''
-    try:
-        url = 'https://www.peeringdb.com/api/ix?net_id={0:s}'.format(net_id)
-        json_obj = urllib.request.urlopen(url)
-        str_json_obj = json_obj.read().decode('utf-8')
-        output = json.loads(str_json_obj)
-    except urllib.error.HTTPError as e:
-        sys.exit('Cannot access \'{0:s}\'. Check network connection.'
-                 'Detail: {1:s}'.format(url, str(e)))
     return output
 
 
@@ -287,16 +297,14 @@ def get_ix(output, address_type):
     return ix_dict
 
 
-def get_ix_name(net, debugging):
+def get_ix_name(net, user, passwd, debugging):
     '''
     This function accesses the peering DB API and
     pulls back the 'name' string of a the given IX
     '''
     try:
-        url = 'https://www.peeringdb.com/api/ix/{0:s}'.format(net)
-        json_obj = urllib.request.urlopen(url)
-        str_json_obj = json_obj.read().decode('utf-8')
-        output = json.loads(str_json_obj)
+        end_point = '/ix/{0:s}'.format(net)
+        output = pdb_api_call(end_point, user, passwd)
         return str(output['data'][0]['name'])
     except urllib.error.HTTPError:
         # If no IX name, construct one with format Exhcange_Nummber_ASN
@@ -319,7 +327,7 @@ def get_common_ix(your_ix, peer_ix, your_name, peer_name):
 
 
 def ask_which_peerings(common_ix, protocol, your_name, peer_name, your_ix,
-                       peer_ix, config, debugging):
+                       peer_ix, config, user, passwd, debugging):
     '''
     This function presents the list of common peering points to the user
     (first in IPv4 then in IPv6). The user needs to enter a comma separated
@@ -335,7 +343,7 @@ def ask_which_peerings(common_ix, protocol, your_name, peer_name, your_ix,
     print('(IPs for ' + peer_name + ' are displayed)')
     # Interate throught common peering points and display them as numbered list
     for index, location in enumerate(common_ix):
-        loc_str = get_ix_name(location, debugging)
+        loc_str = get_ix_name(location, user, passwd, debugging)
         print('{0:1}: {1:s} - {2:s}'.format(index+1, check_ix_correction(
               config, loc_str, debugging), ','.join(peer_ix[location])))
     while(True):
@@ -380,7 +388,8 @@ def check_ix_correction(config, ix_name, debugging):
 def generate_peerings(new_peers, common_ix, protocol, your_name, peer_name,
                       your_asn, peer_asn, peer_ix, peer_irr,
                       peer_prefix_count, op_sys, ios_neigh_grp,
-                      xr_neigh_grp, password, config, ttl_sec, debugging):
+                      xr_neigh_grp, bgp_password, config, ttl_sec,
+                      user, passwd, debugging):
     '''
     This function generates the CLI output
     required to configure the desired peerings.
@@ -388,7 +397,7 @@ def generate_peerings(new_peers, common_ix, protocol, your_name, peer_name,
     underline = '============================================================='
     try:
         for index, location in enumerate(new_peers):
-            loc_str = get_ix_name(location, debugging)
+            loc_str = get_ix_name(location, user, passwd, debugging)
             print('\nThe {0:s} IPv{1:s} peerings are as follows:\n{2:s}'
                   .format(check_ix_correction(config, loc_str, debugging),
                           protocol, underline))
@@ -407,11 +416,11 @@ def generate_peerings(new_peers, common_ix, protocol, your_name, peer_name,
                     if(op_sys == 'ios' or op_sys == 'both'):
                         ios_neigh_grp = config[loc_str]['ios_neigh_grp_v'
                                                         + protocol].split(',')
-                    if('password' in config[loc_str]):
-                        password = config[loc_str]['password']
-                        if(password == 'default' and 'password' in
+                    if('bgp_password' in config[loc_str]):
+                        bgp_password = config[loc_str]['bgp_password']
+                        if(bgp_password == 'default' and 'bgp_password' in
                            config['DEFAULT']):
-                            password = config['DEFAULT']['password']
+                            bgp_password = config['DEFAULT']['bgp_password']
                     if('ttl_sec' in config[loc_str]):
                         if(config[loc_str]['ttl_sec'].lower() == 'true'):
                             ttl_sec = True
@@ -432,8 +441,8 @@ def generate_peerings(new_peers, common_ix, protocol, your_name, peer_name,
                     print('  remote-as {0:s}'.format(peer_asn))
                     print('  use neighbor-group {0:s}'
                           .format(xr_neigh_grp))
-                    if(password):
-                        print('  password {0:s}'.format(password))
+                    if(bgp_password):
+                        print('  password {0:s}'.format(bgp_password))
                     if(ttl_sec):
                         print('  ttl-security')
                     print('  description {0:s}'.format(peer_irr
@@ -455,9 +464,9 @@ def generate_peerings(new_peers, common_ix, protocol, your_name, peer_name,
                     else:
                         print(' neighbor {0:s} inherit peer-session {1:s}'
                               .format(address, ios_neigh_grp[0]))
-                    if(password):
+                    if(bgp_password):
                         print(' neighbor {0:s} password {1:s}'
-                              .format(address, password))
+                              .format(address, bgp_password))
                     if(ttl_sec):
                         print(' neighbor {0:s} ttl-security hops 1'
                               .format(address))
@@ -478,19 +487,19 @@ def generate_peerings(new_peers, common_ix, protocol, your_name, peer_name,
                 ios_neigh_grp = config['DEFAULT']['ios_neigh_grp_v'
                                                   + protocol].split(',')
                 op_sys = config['DEFAULT']['op_sys']
-                if('password' in config['DEFAULT']):
-                    password = config['DEFAULT']['password']
+                if('bgp_password' in config['DEFAULT']):
+                    bgp_password = config['DEFAULT']['bgp_password']
                 else:
-                    password = None
+                    bgp_password = None
                 if('ttl_sec' in config['DEFAULT']):
                     if(config['DEFAULT']['ttl_sec'].lower() == 'true'):
                         ttl_sec = True
                     else:
                         ttl_sec = False
-                if('password' in config['DEFAULT']):
-                    password = config['DEFAULT']['password']
+                if('bgp_password' in config['DEFAULT']):
+                    bgp_password = config['DEFAULT']['bgp_password']
                 else:
-                    password = None
+                    bgp_password = None
 
     except KeyError as e:
         print('KeyError when generating peerings: {0:s}'.format(e))
